@@ -1,8 +1,7 @@
 services:
-  - type: web
+  - type: worker
     name: secret-angel-telegram-bot
     env: node
-    rootDir: telegram bot
     buildCommand: npm install
     startCommand: npm start
     envVars:
