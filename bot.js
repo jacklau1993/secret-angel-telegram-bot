@@ -122,14 +122,16 @@ const bot = new TelegramBot(token, botOptions);
 
 // Set up webhook for production environment
 if (!isDevelopment) {
-  // Get the Render URL from environment
-  const url = `https://${process.env.RENDER_EXTERNAL_URL}`;
+  // Get the Render external URL and remove any trailing slash
+  const externalUrl = process.env.RENDER_EXTERNAL_URL.replace(/\/$/, '');
   // Set webhook path
   const webhookPath = `/webhook/${token}`;
+  // Construct the full webhook URL
+  const webhookUrl = `https://${externalUrl}${webhookPath}`;
   
   // Set webhook
-  bot.setWebHook(`${url}${webhookPath}`).then(() => {
-    console.log('Webhook set successfully');
+  bot.setWebHook(webhookUrl).then(() => {
+    console.log(`Webhook set successfully to ${webhookUrl}`);
   }).catch((error) => {
     console.error('Failed to set webhook:', error);
   });
