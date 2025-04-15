@@ -1,5 +1,5 @@
 services:
-  - type: worker
+  - type: web
     name: secret-angel-telegram-bot
     env: node
     buildCommand: npm install

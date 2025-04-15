@@ -5,10 +5,14 @@ const { Client } = require('pg');
 const express = require('express');
 const app = express();
 
+// Add body parser for webhook
+app.use(express.json());
+
 // --- Configuration ---
 // Load from environment variables
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const adminIdString = process.env.ADMIN_TELEGRAM_ID;
+const isDevelopment = !process.env.RENDER;
 
 // Validate required environment variables
 if (!token) {
@@ -108,8 +112,36 @@ client.connect((err) => {
   }
 });
 
-// Initialize bot
-const bot = new TelegramBot(token, { polling: true });
+// Configure bot options based on environment
+const botOptions = isDevelopment ? 
+  { polling: true } : 
+  { webHook: { port: process.env.PORT || 10000 } };
+
+// Initialize bot with appropriate configuration
+const bot = new TelegramBot(token, botOptions);
+
+// Set up webhook for production environment
+if (!isDevelopment) {
+  // Get the Render URL from environment
+  const url = `https://${process.env.RENDER_EXTERNAL_URL}`;
+  // Set webhook path
+  const webhookPath = `/webhook/${token}`;
+  
+  // Set webhook
+  bot.setWebHook(`${url}${webhookPath}`).then(() => {
+    console.log('Webhook set successfully');
+  }).catch((error) => {
+    console.error('Failed to set webhook:', error);
+  });
+
+  // Handle webhook route
+  app.post(webhookPath, (req, res) => {
+    bot.handleUpdate(req.body);
+    res.sendStatus(200);
+  });
+} else {
+  console.log('Running in development mode with polling');
+}
 
 // --- Set Bot Commands for Telegram Menu ---
 const userCommands = [
