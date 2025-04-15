@@ -2,6 +2,8 @@ require('dotenv').config(); // Load environment variables from .env file
 
 const TelegramBot = require('node-telegram-bot-api');
 const { Client } = require('pg');
+const express = require('express');
+const app = express();
 
 // --- Configuration ---
 // Load from environment variables
@@ -810,6 +812,17 @@ bot.on('message', async (msg) => { // Make the handler async to use await for DB
             // -------------------------------------------------------------------
         }
     }
+});
+
+// Add Express routes
+app.get('/', (req, res) => {
+  res.send('Secret Angel Bot is running!');
+});
+
+// Listen on the port Render provides, or default to 10000
+const port = process.env.PORT || 10000;
+app.listen(port, '0.0.0.0', () => {
+  console.log(`Express server is running on port ${port}`);
 });
 
 // Handle polling errors
