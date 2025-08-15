@@ -68,6 +68,8 @@ This bot includes several security features to protect against common vulnerabil
 - **Webhook Verification**: Ensures webhook requests are genuinely from Telegram
 - **Admin Access Control**: Admin-only commands are protected by user ID verification
 
+For detailed information about security considerations and recommended future improvements, see [SECURITY.md](SECURITY.md).
+
 ## Bot Commands
 
 User Commands:
