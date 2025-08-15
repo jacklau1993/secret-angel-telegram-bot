@@ -4,6 +4,14 @@ const TelegramBot = require('node-telegram-bot-api');
 const { Client } = require('pg');
 const express = require('express');
 const crypto = require('crypto');
+const {
+    validateName,
+    validateWishlist,
+    validateNumber,
+    validateRestrictionsInput,
+    verifyWebhookRequest
+} = require('./security');
+const { isRateLimited } = require('./rateLimit');
 const app = express();
 
 // Add body parser for webhook
@@ -137,8 +145,15 @@ if (!isDevelopment) {
     console.error('Failed to set webhook:', error);
   });
 
-  // Handle webhook route
+  // Handle webhook route with verification
   app.post(webhookPath, (req, res) => {
+    // Verify the webhook request is from Telegram
+    if (!verifyWebhookRequest(req, token)) {
+      console.warn('Invalid webhook request received');
+      res.status(403).send('Forbidden');
+      return;
+    }
+    
     bot.handleUpdate(req.body);
     res.sendStatus(200);
   });
@@ -339,27 +354,32 @@ bot.onText(/\/register/, (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id; // Use Telegram User ID for potential future linking
 
+    // Rate limiting check
+    if (isRateLimited(userId)) {
+        bot.sendMessage(chatId, "You're sending requests too quickly. Please wait a moment before trying again.");
+        return;
+    }
+
     // Check if user is already registered (using name for now, like web app)
     // A more robust check might involve storing telegram_id in the DB
-    client.query('SELECT id FROM tg_participants', (err, result) => { // Check if *any* participant exists with this name
-        if (err) {
-            console.error('Error checking tg_participants during registration:', err);
-            bot.sendMessage(chatId, 'Sorry, something went wrong. Please try again later.');
-            return;
-        }
+    // For now, we just start the registration flow.
 
-        // Simple check if a user with this Telegram ID might be associated (needs DB schema change later)
-        // For now, we just start the registration flow.
-
-        bot.sendMessage(chatId, "Okay, let's get you registered! What's your name?");
-        userState[chatId] = { state: 'awaiting_name' };
-    });
+    bot.sendMessage(chatId, "Okay, let's get you registered! What's your name?");
+    userState[chatId] = { state: 'awaiting_name' };
 });
 // --------------------------
 
 // --- Assignment Command ---
 bot.onText(/\/myassignment/, (msg) => {
     const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    
+    // Rate limiting check
+    if (isRateLimited(userId)) {
+        bot.sendMessage(chatId, "You're sending requests too quickly. Please wait a moment before trying again.");
+        return;
+    }
+
     // Ask for the name they registered with
     bot.sendMessage(chatId, "Okay, let's find your assignment. What name did you register with?");
     userState[chatId] = { state: 'awaiting_name_for_assignment' };
@@ -373,6 +393,12 @@ bot.onText(/\/participants/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
 
+    // Rate limiting check
+    if (isRateLimited(userId)) {
+        bot.sendMessage(chatId, "You're sending requests too quickly. Please wait a moment before trying again.");
+        return;
+    }
+
     if (!isAdmin(userId)) {
         bot.sendMessage(chatId, "Sorry, this command is for admins only.");
         return;
@@ -385,7 +411,7 @@ bot.onText(/\/participants/, async (msg) => {
             return;
         }
 
-        let message = "*Registered Participants:*\n\n";
+        let message = "*Registered Participants:\n\n";
         result.rows.forEach((p, index) => {
             message += `${index + 1}. *${p.name}*\n   Wishlist: ${p.wishlist || '-'}\n`;
         });
@@ -409,6 +435,12 @@ bot.onText(/\/cleardata/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
 
+    // Rate limiting check
+    if (isRateLimited(userId)) {
+        bot.sendMessage(chatId, "You're sending requests too quickly. Please wait a moment before trying again.");
+        return;
+    }
+
     if (!isAdmin(userId)) {
         bot.sendMessage(chatId, "Sorry, this command is for admins only.");
         return;
@@ -423,6 +455,12 @@ bot.onText(/\/cleardata/, async (msg) => {
 bot.onText(/\/creategroups/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
+
+    // Rate limiting check
+    if (isRateLimited(userId)) {
+        bot.sendMessage(chatId, "You're sending requests too quickly. Please wait a moment before trying again.");
+        return;
+    }
 
     if (!isAdmin(userId)) {
         bot.sendMessage(chatId, "Sorry, this command is for admins only.");
@@ -457,6 +495,12 @@ bot.on('message', async (msg) => { // Make the handler async to use await for DB
     const text = msg.text;
     const userId = msg.from.id; // Get userId for admin checks in state handling
 
+    // Rate limiting check
+    if (isRateLimited(userId)) {
+        bot.sendMessage(chatId, "You're sending requests too quickly. Please wait a moment before trying again.");
+        return;
+    }
+
     // Ignore commands in the general message handler
     if (text && text.startsWith('/')) {
         console.log(`Received command from ${msg.from.username || msg.from.first_name}: ${text}`);
@@ -476,23 +520,27 @@ bot.on('message', async (msg) => { // Make the handler async to use await for DB
         const state = stateData.state;
 
         if (state === 'awaiting_name') {
-            const name = text.trim();
-            if (!name) {
-                bot.sendMessage(chatId, "Name cannot be empty. Please tell me your name.");
+            // Validate and sanitize the name
+            const sanitizedName = validateName(text);
+            
+            if (!sanitizedName) {
+                bot.sendMessage(chatId, "Please provide a valid name (alphanumeric characters, spaces, hyphens, and underscores only, max 100 characters).");
                 return;
             }
-            userState[chatId].name = name;
+            
+            userState[chatId].name = sanitizedName;
             userState[chatId].state = 'awaiting_wishlist';
-            bot.sendMessage(chatId, `Got it, ${name}! Now, what's on your wishlist? (Optional, just press Enter or send 'skip' if none)`);
+            bot.sendMessage(chatId, `Got it, ${sanitizedName}! Now, what's on your wishlist? (Optional, just press Enter or send 'skip' if none)`);
         } else if (state === 'awaiting_wishlist') {
             const name = userState[chatId].name;
-            let wishlist = text.trim();
-            if (wishlist.toLowerCase() === 'skip' || wishlist === '') {
-                wishlist = ''; // Store empty string for no wishlist
+            // Validate and sanitize the wishlist
+            let sanitizedWishlist = '';
+            if (text.toLowerCase() !== 'skip') {
+                sanitizedWishlist = validateWishlist(text);
             }
 
             // --- Save to Database ---
-            client.query('INSERT INTO tg_participants (name, wishlist) VALUES ($1, $2) ON CONFLICT (name) DO UPDATE SET wishlist = EXCLUDED.wishlist', [name, wishlist], (err, result) => { // Allow re-registering to update wishlist
+            client.query('INSERT INTO tg_participants (name, wishlist) VALUES ($1, $2) ON CONFLICT (name) DO UPDATE SET wishlist = EXCLUDED.wishlist', [name, sanitizedWishlist], (err, result) => { // Allow re-registering to update wishlist
                 if (err) {
                     console.error('Error inserting tg_participant via bot:', err);
                     // Don't expose detailed DB errors to user
@@ -501,17 +549,19 @@ bot.on('message', async (msg) => { // Make the handler async to use await for DB
                 //      // This means the name already existed (ON CONFLICT DO NOTHING)
                 //      bot.sendMessage(chatId, `It seems a participant named "${name}" is already registered. If this wasn't you, please use a different name or contact the admin.`);
                 } else {
-                    console.log(`Participant ${name} registered/updated via bot with wishlist: ${wishlist || 'none'}.`);
-                    bot.sendMessage(chatId, `Great! You're registered as "${name}". ${wishlist ? 'Your wishlist is saved/updated.' : 'Your wishlist is cleared.'} You can use /myassignment later to check your Secret Angel.`);
+                    console.log(`Participant ${name} registered/updated via bot with wishlist: ${sanitizedWishlist || 'none'}.`);
+                    bot.sendMessage(chatId, `Great! You're registered as "${name}". ${sanitizedWishlist ? 'Your wishlist is saved/updated.' : 'Your wishlist is cleared.'} You can use /myassignment later to check your Secret Angel.`);
                 }
                 // Clear state after completion or error
                 delete userState[chatId];
             });
             // ------------------------
         } else if (state === 'awaiting_name_for_assignment') {
-            const name = text.trim();
-            if (!name) {
-                bot.sendMessage(chatId, "Name cannot be empty. Please tell me the name you registered with.");
+            // Validate and sanitize the name
+            const sanitizedName = validateName(text);
+            
+            if (!sanitizedName) {
+                bot.sendMessage(chatId, "Please provide a valid name (alphanumeric characters, spaces, hyphens, and underscores only, max 100 characters).");
                 return;
             }
 
@@ -526,24 +576,24 @@ bot.on('message', async (msg) => { // Make the handler async to use await for DB
                     JOIN tg_participants receiver ON a.receiver_participant_id = receiver.id
                     WHERE lower(giver.name) = lower($1); -- Case-insensitive check
                 `;
-                const result = await client.query(query, [name]);
+                const result = await client.query(query, [sanitizedName]);
 
                 if (result.rows.length > 0) {
                     const assignment = result.rows[0];
                     const receiverName = assignment.receiver_name;
                     const receiverWishlist = assignment.receiver_wishlist || 'No wishlist provided.'; // Handle empty wishlist
-                    bot.sendMessage(chatId, `Okay, ${name}, you are the Secret Angel for: *${receiverName}*!\n\nTheir wishlist: \n${receiverWishlist}`, { parse_mode: 'Markdown' });
+                    bot.sendMessage(chatId, `Okay, ${sanitizedName}, you are the Secret Angel for: *${receiverName}*!\n\nTheir wishlist: \n${receiverWishlist}`, { parse_mode: 'Markdown' });
                 } else {
                     // Check if the participant exists but just doesn't have an assignment yet
-                    const participantCheck = await client.query('SELECT 1 FROM tg_participants WHERE lower(name) = lower($1)', [name]); // Case-insensitive check
+                    const participantCheck = await client.query('SELECT 1 FROM tg_participants WHERE lower(name) = lower($1)', [sanitizedName]); // Case-insensitive check
                     if (participantCheck.rows.length > 0) {
-                        bot.sendMessage(chatId, `Hi ${name}, it looks like assignments haven't been made yet, or you weren't included in the latest round. Please check back later or contact the admin.`);
+                        bot.sendMessage(chatId, `Hi ${sanitizedName}, it looks like assignments haven't been made yet, or you weren't included in the latest round. Please check back later or contact the admin.`);
                     } else {
-                        bot.sendMessage(chatId, `Sorry, I couldn't find a registration for the name "${name}" (case-insensitive). Please make sure you entered it correctly or use /register first.`);
+                        bot.sendMessage(chatId, `Sorry, I couldn't find a registration for the name "${sanitizedName}" (case-insensitive). Please make sure you entered it correctly or use /register first.`);
                     }
                 }
             } catch (error) {
-                console.error(`Error fetching assignment for ${name} (chatId: ${chatId}):`, error);
+                console.error(`Error fetching assignment for ${sanitizedName} (chatId: ${chatId}):`, error);
                 bot.sendMessage(chatId, 'Sorry, something went wrong while fetching your assignment. Please try again later.');
             }
             // -------------------------------------
@@ -580,15 +630,11 @@ bot.on('message', async (msg) => { // Make the handler async to use await for DB
                 return;
             }
 
-            const numGroups = parseInt(text.trim(), 10);
-            const participantCount = stateData.participantCount;
-
-            if (isNaN(numGroups) || numGroups <= 0) {
-                bot.sendMessage(chatId, "Please enter a valid positive number for the groups.");
-                return;
-            }
-            if (numGroups > participantCount) {
-                bot.sendMessage(chatId, `You cannot create more groups (${numGroups}) than participants (${participantCount}). Please enter a smaller number.`);
+            // Validate the number of groups
+            const numGroups = validateNumber(text, 1, stateData.participantCount);
+            
+            if (numGroups === null) {
+                bot.sendMessage(chatId, `Please enter a valid number between 1 and ${stateData.participantCount} for the groups.`);
                 return;
             }
 
@@ -604,38 +650,17 @@ bot.on('message', async (msg) => { // Make the handler async to use await for DB
                 return;
             }
 
-            const restrictionsInput = text.trim();
-            let restrictions = [];
             const participants = stateData.participants; // Get participants fetched earlier {id, name}
             const participantNames = participants.map(p => p.name);
             const participantMap = new Map(participants.map(p => [p.name, p.id])); // Map name to ID
             const numGroups = stateData.numGroups;
 
-            if (restrictionsInput.toLowerCase() !== 'none' && restrictionsInput !== '') {
-                try {
-                    const lines = restrictionsInput.split('\n');
-                    restrictions = lines.map(line => {
-                        const pair = line.split(',').map(name => name.trim());
-                        if (pair.length !== 2 || pair.some(name => name === '')) {
-                            throw new Error(`Invalid format on line: "${line}". Use "Name1, Name2".`);
-                        }
-                        // Validate names against the fetched participant list (case-sensitive for now)
-                        // TODO: Consider case-insensitive validation if needed
-                        if (!participantNames.includes(pair[0])) {
-                            throw new Error(`Participant "${pair[0]}" not found in the registered list.`);
-                        }
-                        if (!participantNames.includes(pair[1])) {
-                             throw new Error(`Participant "${pair[1]}" not found in the registered list.`);
-                        }
-                         if (pair[0] === pair[1]) {
-                             throw new Error(`Cannot restrict a participant ("${pair[0]}") from gifting to themselves.`);
-                         }
-                        return pair;
-                    });
-                } catch (parseError) {
-                    bot.sendMessage(chatId, `Error parsing restrictions: ${parseError.message}\nPlease try again, or send 'none'.`);
-                    return; // Keep state as awaiting_restrictions
-                }
+            // Validate restrictions input
+            const restrictions = validateRestrictionsInput(text, participantNames);
+            
+            if (restrictions === null) {
+                bot.sendMessage(chatId, "Invalid restrictions format. Please enter pairs as 'Name1, Name2' (one per line), or send 'none'. Participant names must match exactly.");
+                return; // Keep state as awaiting_restrictions
             }
 
             bot.sendMessage(chatId, `Got it. Processing ${numGroups} groups with ${restrictions.length} restriction pair(s)...`);
