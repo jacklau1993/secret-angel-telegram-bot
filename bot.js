@@ -3,6 +3,7 @@ require('dotenv').config(); // Load environment variables from .env file
 const TelegramBot = require('node-telegram-bot-api');
 const { Client } = require('pg');
 const express = require('express');
+const crypto = require('crypto');
 const app = express();
 
 // Add body parser for webhook
@@ -180,12 +181,13 @@ function isAdmin(userId) {
 // --- Utility Functions (Copied from Web App Backend) ---
 
 /**
- * Shuffles array in place.
+ * Shuffles array in place using cryptographically secure randomness.
+ * Uses crypto.randomInt() instead of Math.random() to prevent predictability attacks.
  * @param {Array} array items An array containing the items.
  */
 function shuffle(array) {
     for (let i = array.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
+        const j = crypto.randomInt(0, i + 1);
         [array[i], array[j]] = [array[j], array[i]];
     }
 }
