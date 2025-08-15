@@ -131,6 +131,12 @@ const bot = new TelegramBot(token, botOptions);
 
 // Set up webhook for production environment
 if (!isDevelopment) {
+  // Check if RENDER_EXTERNAL_URL is set
+  if (!process.env.RENDER_EXTERNAL_URL) {
+    console.error('FATAL ERROR: RENDER_EXTERNAL_URL environment variable is not set.');
+    process.exit(1);
+  }
+  
   // Get the Render external URL and remove any trailing slash
   const externalUrl = process.env.RENDER_EXTERNAL_URL.replace(/\/$/, '');
   // Set webhook path
@@ -344,45 +350,59 @@ console.log('Telegram bot started...');
 
 // Simple message handler to check if the bot is alive
 bot.onText(/\/start/, (msg) => {
-  const chatId = msg.chat.id;
-  bot.sendMessage(chatId, 'Welcome to the Secret Angel Bot! Use /register to sign up.');
-  delete userState[chatId]; // Clear any previous state
+  try {
+    const chatId = msg.chat.id;
+    bot.sendMessage(chatId, 'Welcome to the Secret Angel Bot! Use /register to sign up.');
+    delete userState[chatId]; // Clear any previous state
+  } catch (error) {
+    console.error('Error in /start command:', error);
+  }
 });
 
 // --- Registration Command ---
 bot.onText(/\/register/, (msg) => {
-    const chatId = msg.chat.id;
-    const userId = msg.from.id; // Use Telegram User ID for potential future linking
+    try {
+        const chatId = msg.chat.id;
+        const userId = msg.from.id; // Use Telegram User ID for potential future linking
 
-    // Rate limiting check
-    if (isRateLimited(userId)) {
-        bot.sendMessage(chatId, "You're sending requests too quickly. Please wait a moment before trying again.");
-        return;
+        // Rate limiting check
+        if (isRateLimited(userId)) {
+            bot.sendMessage(chatId, "You're sending requests too quickly. Please wait a moment before trying again.");
+            return;
+        }
+
+        // Check if user is already registered (using name for now, like web app)
+        // A more robust check might involve storing telegram_id in the DB
+        // For now, we just start the registration flow.
+
+        bot.sendMessage(chatId, "Okay, let's get you registered! What's your name?");
+        userState[chatId] = { state: 'awaiting_name' };
+    } catch (error) {
+        console.error('Error in /register command:', error);
+        // Don't send error details to user for security reasons
     }
-
-    // Check if user is already registered (using name for now, like web app)
-    // A more robust check might involve storing telegram_id in the DB
-    // For now, we just start the registration flow.
-
-    bot.sendMessage(chatId, "Okay, let's get you registered! What's your name?");
-    userState[chatId] = { state: 'awaiting_name' };
 });
 // --------------------------
 
 // --- Assignment Command ---
 bot.onText(/\/myassignment/, (msg) => {
-    const chatId = msg.chat.id;
-    const userId = msg.from.id;
-    
-    // Rate limiting check
-    if (isRateLimited(userId)) {
-        bot.sendMessage(chatId, "You're sending requests too quickly. Please wait a moment before trying again.");
-        return;
-    }
+    try {
+        const chatId = msg.chat.id;
+        const userId = msg.from.id;
+        
+        // Rate limiting check
+        if (isRateLimited(userId)) {
+            bot.sendMessage(chatId, "You're sending requests too quickly. Please wait a moment before trying again.");
+            return;
+        }
 
-    // Ask for the name they registered with
-    bot.sendMessage(chatId, "Okay, let's find your assignment. What name did you register with?");
-    userState[chatId] = { state: 'awaiting_name_for_assignment' };
+        // Ask for the name they registered with
+        bot.sendMessage(chatId, "Okay, let's find your assignment. What name did you register with?");
+        userState[chatId] = { state: 'awaiting_name_for_assignment' };
+    } catch (error) {
+        console.error('Error in /myassignment command:', error);
+        // Don't send error details to user for security reasons
+    }
 });
 // ------------------------
 
@@ -491,387 +511,406 @@ bot.onText(/\/creategroups/, async (msg) => {
 
 // Listener for any message (for debugging and handling registration/assignment steps)
 bot.on('message', async (msg) => { // Make the handler async to use await for DB queries
-    const chatId = msg.chat.id;
-    const text = msg.text;
-    const userId = msg.from.id; // Get userId for admin checks in state handling
+    try {
+        const chatId = msg.chat.id;
+        const text = msg.text;
+        const userId = msg.from.id; // Get userId for admin checks in state handling
 
-    // Rate limiting check
-    if (isRateLimited(userId)) {
-        bot.sendMessage(chatId, "You're sending requests too quickly. Please wait a moment before trying again.");
-        return;
-    }
+        // Rate limiting check
+        if (isRateLimited(userId)) {
+            bot.sendMessage(chatId, "You're sending requests too quickly. Please wait a moment before trying again.");
+            return;
+        }
 
-    // Ignore commands in the general message handler
-    if (text && text.startsWith('/')) {
-        console.log(`Received command from ${msg.from.username || msg.from.first_name}: ${text}`);
-        // Clear state if user issues a new command mid-flow
+        // Ignore commands in the general message handler
+        if (text && text.startsWith('/')) {
+            console.log(`Received command from ${msg.from.username || msg.from.first_name}: ${text}`);
+            // Clear state if user issues a new command mid-flow
+            if (userState[chatId]) {
+                 console.log(`Clearing state for chat ${chatId} due to new command.`);
+                 delete userState[chatId];
+            }
+            return;
+        }
+
+        console.log(`Received message from ${msg.from.username || msg.from.first_name}: ${text}`);
+
+        // Handle steps based on state
         if (userState[chatId]) {
-             console.log(`Clearing state for chat ${chatId} due to new command.`);
-             delete userState[chatId];
-        }
-        return;
-    }
+            const stateData = userState[chatId];
+            const state = stateData.state;
 
-    console.log(`Received message from ${msg.from.username || msg.from.first_name}: ${text}`);
-
-    // Handle steps based on state
-    if (userState[chatId]) {
-        const stateData = userState[chatId];
-        const state = stateData.state;
-
-        if (state === 'awaiting_name') {
-            // Validate and sanitize the name
-            const sanitizedName = validateName(text);
-            
-            if (!sanitizedName) {
-                bot.sendMessage(chatId, "Please provide a valid name (alphanumeric characters, spaces, hyphens, and underscores only, max 100 characters).");
-                return;
-            }
-            
-            userState[chatId].name = sanitizedName;
-            userState[chatId].state = 'awaiting_wishlist';
-            bot.sendMessage(chatId, `Got it, ${sanitizedName}! Now, what's on your wishlist? (Optional, just press Enter or send 'skip' if none)`);
-        } else if (state === 'awaiting_wishlist') {
-            const name = userState[chatId].name;
-            // Validate and sanitize the wishlist
-            let sanitizedWishlist = '';
-            if (text.toLowerCase() !== 'skip') {
-                sanitizedWishlist = validateWishlist(text);
-            }
-
-            // --- Save to Database ---
-            client.query('INSERT INTO tg_participants (name, wishlist) VALUES ($1, $2) ON CONFLICT (name) DO UPDATE SET wishlist = EXCLUDED.wishlist', [name, sanitizedWishlist], (err, result) => { // Allow re-registering to update wishlist
-                if (err) {
-                    console.error('Error inserting tg_participant via bot:', err);
-                    // Don't expose detailed DB errors to user
-                    bot.sendMessage(chatId, 'Sorry, there was an error trying to register you. Please try again later.');
-                // } else if (result.rowCount === 0) { // This check is no longer needed with DO UPDATE
-                //      // This means the name already existed (ON CONFLICT DO NOTHING)
-                //      bot.sendMessage(chatId, `It seems a participant named "${name}" is already registered. If this wasn't you, please use a different name or contact the admin.`);
-                } else {
-                    console.log(`Participant ${name} registered/updated via bot with wishlist: ${sanitizedWishlist || 'none'}.`);
-                    bot.sendMessage(chatId, `Great! You're registered as "${name}". ${sanitizedWishlist ? 'Your wishlist is saved/updated.' : 'Your wishlist is cleared.'} You can use /myassignment later to check your Secret Angel.`);
+            if (state === 'awaiting_name') {
+                // Validate and sanitize the name
+                const sanitizedName = validateName(text);
+                
+                if (!sanitizedName) {
+                    bot.sendMessage(chatId, "Please provide a valid name (alphanumeric characters, spaces, hyphens, and underscores only, max 100 characters).");
+                    return;
                 }
-                // Clear state after completion or error
-                delete userState[chatId];
-            });
-            // ------------------------
-        } else if (state === 'awaiting_name_for_assignment') {
-            // Validate and sanitize the name
-            const sanitizedName = validateName(text);
-            
-            if (!sanitizedName) {
-                bot.sendMessage(chatId, "Please provide a valid name (alphanumeric characters, spaces, hyphens, and underscores only, max 100 characters).");
-                return;
-            }
+                
+                userState[chatId].name = sanitizedName;
+                userState[chatId].state = 'awaiting_wishlist';
+                bot.sendMessage(chatId, `Got it, ${sanitizedName}! Now, what's on your wishlist? (Optional, just press Enter or send 'skip' if none)`);
+            } else if (state === 'awaiting_wishlist') {
+                const name = userState[chatId].name;
+                // Validate and sanitize the wishlist
+                let sanitizedWishlist = '';
+                if (text.toLowerCase() !== 'skip') {
+                    sanitizedWishlist = validateWishlist(text);
+                }
 
-            // --- Query Database for Assignment ---
-            try {
-                const query = `
-                    SELECT 
-                        receiver.name AS receiver_name, 
-                        receiver.wishlist AS receiver_wishlist
-                    FROM tg_assignments a
-                    JOIN tg_participants giver ON a.giver_participant_id = giver.id
-                    JOIN tg_participants receiver ON a.receiver_participant_id = receiver.id
-                    WHERE lower(giver.name) = lower($1); -- Case-insensitive check
-                `;
-                const result = await client.query(query, [sanitizedName]);
-
-                if (result.rows.length > 0) {
-                    const assignment = result.rows[0];
-                    const receiverName = assignment.receiver_name;
-                    const receiverWishlist = assignment.receiver_wishlist || 'No wishlist provided.'; // Handle empty wishlist
-                    bot.sendMessage(chatId, `Okay, ${sanitizedName}, you are the Secret Angel for: *${receiverName}*!\n\nTheir wishlist: \n${receiverWishlist}`, { parse_mode: 'Markdown' });
-                } else {
-                    // Check if the participant exists but just doesn't have an assignment yet
-                    const participantCheck = await client.query('SELECT 1 FROM tg_participants WHERE lower(name) = lower($1)', [sanitizedName]); // Case-insensitive check
-                    if (participantCheck.rows.length > 0) {
-                        bot.sendMessage(chatId, `Hi ${sanitizedName}, it looks like assignments haven't been made yet, or you weren't included in the latest round. Please check back later or contact the admin.`);
+                // --- Save to Database ---
+                client.query('INSERT INTO tg_participants (name, wishlist) VALUES ($1, $2) ON CONFLICT (name) DO UPDATE SET wishlist = EXCLUDED.wishlist', [name, sanitizedWishlist], (err, result) => { // Allow re-registering to update wishlist
+                    if (err) {
+                        console.error('Error inserting tg_participant via bot:', err);
+                        // Don't expose detailed DB errors to user
+                        bot.sendMessage(chatId, 'Sorry, there was an error trying to register you. Please try again later.');
+                    // } else if (result.rowCount === 0) { // This check is no longer needed with DO UPDATE
+                    //      // This means the name already existed (ON CONFLICT DO NOTHING)
+                    //      bot.sendMessage(chatId, `It seems a participant named "${name}" is already registered. If this wasn't you, please use a different name or contact the admin.`);
                     } else {
-                        bot.sendMessage(chatId, `Sorry, I couldn't find a registration for the name "${sanitizedName}" (case-insensitive). Please make sure you entered it correctly or use /register first.`);
+                        console.log(`Participant ${name} registered/updated via bot with wishlist: ${sanitizedWishlist || 'none'}.`);
+                        bot.sendMessage(chatId, `Great! You're registered as "${name}". ${sanitizedWishlist ? 'Your wishlist is saved/updated.' : 'Your wishlist is cleared.'} You can use /myassignment later to check your Secret Angel.`);
                     }
+                    // Clear state after completion or error
+                    delete userState[chatId];
+                });
+                // ------------------------
+            } else if (state === 'awaiting_name_for_assignment') {
+                // Validate and sanitize the name
+                const sanitizedName = validateName(text);
+                
+                if (!sanitizedName) {
+                    bot.sendMessage(chatId, "Please provide a valid name (alphanumeric characters, spaces, hyphens, and underscores only, max 100 characters).");
+                    return;
                 }
-            } catch (error) {
-                console.error(`Error fetching assignment for ${sanitizedName} (chatId: ${chatId}):`, error);
-                bot.sendMessage(chatId, 'Sorry, something went wrong while fetching your assignment. Please try again later.');
-            }
-            // -------------------------------------
 
-            // Clear state after handling
-            delete userState[chatId];
-        } else if (state === 'awaiting_clear_confirmation') {
-            if (!isAdmin(userId)) {
-                // Safety check: only admin can confirm
-                bot.sendMessage(chatId, "Confirmation error. Only the admin can confirm data clearing.");
-                delete userState[chatId];
-                return;
-            }
-
-            if (text && text.toLowerCase() === 'yes') {
+                // --- Query Database for Assignment ---
                 try {
-                    // Use TRUNCATE on specific tables for the bot
-                    await client.query('TRUNCATE TABLE tg_participants, tg_groups, tg_group_members, tg_assignments RESTART IDENTITY CASCADE');
-                    bot.sendMessage(chatId, '✅ All Telegram bot participant, group, and assignment data has been cleared.');
-                    console.log(`Admin ${userId} cleared all Telegram bot data.`);
-                } catch (error) {
-                    console.error('Error clearing Telegram bot data:', error);
-                    bot.sendMessage(chatId, '❌ Failed to clear Telegram bot data. Please check the bot logs.');
-                }
-            } else {
-                bot.sendMessage(chatId, 'Data clearing cancelled.');
-            }
-            // Clear state regardless of confirmation outcome
-            delete userState[chatId];
-        } else if (state === 'awaiting_num_groups') {
-            if (!isAdmin(userId)) {
-                bot.sendMessage(chatId, "State error. Only the admin can specify the number of groups.");
-                delete userState[chatId];
-                return;
-            }
+                    const query = `
+                        SELECT 
+                            receiver.name AS receiver_name, 
+                            receiver.wishlist AS receiver_wishlist
+                        FROM tg_assignments a
+                        JOIN tg_participants giver ON a.giver_participant_id = giver.id
+                        JOIN tg_participants receiver ON a.receiver_participant_id = receiver.id
+                        WHERE lower(giver.name) = lower($1); -- Case-insensitive check
+                    `;
+                    const result = await client.query(query, [sanitizedName]);
 
-            // Validate the number of groups
-            const numGroups = validateNumber(text, 1, stateData.participantCount);
-            
-            if (numGroups === null) {
-                bot.sendMessage(chatId, `Please enter a valid number between 1 and ${stateData.participantCount} for the groups.`);
-                return;
-            }
+                    if (result.rows.length > 0) {
+                        const assignment = result.rows[0];
+                        const receiverName = assignment.receiver_name;
+                        const receiverWishlist = assignment.receiver_wishlist || 'No wishlist provided.'; // Handle empty wishlist
+                        bot.sendMessage(chatId, `Okay, ${sanitizedName}, you are the Secret Angel for: *${receiverName}*!
 
-            // Store numGroups and transition to asking for restrictions
-            userState[chatId].numGroups = numGroups;
-            userState[chatId].state = 'awaiting_restrictions';
-            bot.sendMessage(chatId, `Okay, ${numGroups} groups. Now, please enter the restricted pairs, one pair per line, comma-separated (e.g., Alice, Bob). Send 'none' or just press Enter if there are no restrictions.`);
-
-        } else if (state === 'awaiting_restrictions') {
-             if (!isAdmin(userId)) {
-                bot.sendMessage(chatId, "State error. Only the admin can provide restrictions.");
-                delete userState[chatId];
-                return;
-            }
-
-            const participants = stateData.participants; // Get participants fetched earlier {id, name}
-            const participantNames = participants.map(p => p.name);
-            const participantMap = new Map(participants.map(p => [p.name, p.id])); // Map name to ID
-            const numGroups = stateData.numGroups;
-
-            // Validate restrictions input
-            const restrictions = validateRestrictionsInput(text, participantNames);
-            
-            if (restrictions === null) {
-                bot.sendMessage(chatId, "Invalid restrictions format. Please enter pairs as 'Name1, Name2' (one per line), or send 'none'. Participant names must match exactly.");
-                return; // Keep state as awaiting_restrictions
-            }
-
-            bot.sendMessage(chatId, `Got it. Processing ${numGroups} groups with ${restrictions.length} restriction pair(s)...`);
-            delete userState[chatId]; // Clear state before starting the process
-
-            // --- Perform Group Creation and Assignment ---
-            try {
-                // Clear previous groups and assignments first within a transaction
-                await client.query('BEGIN'); // Start transaction
-                await client.query('TRUNCATE TABLE tg_groups, tg_group_members, tg_assignments RESTART IDENTITY CASCADE');
-                console.log(`Admin ${userId} cleared previous group/assignment data before creating new ones.`);
-
-                // Split names into groups using the local function
-                const createdGroupsByName = assignParticipantsToGroups(participantNames, numGroups);
-
-                let assignmentsSummary = '';
-                let totalAssignments = 0;
-                let allGroupsProcessedSuccessfully = true;
-
-                for (let i = 0; i < createdGroupsByName.length; i++) {
-                    const groupNames = createdGroupsByName[i];
-                    const groupName = `Secret Angel Group ${i + 1}`;
-
-                    if (groupNames.length < 2) {
-                        console.warn(`Skipping group ${i+1} because it has fewer than 2 members: [${groupNames.join(', ')}]`);
-                        assignmentsSummary += `\n*${groupName}* (${groupNames.length} members): Skipped (requires at least 2 members for assignments)\n`;
-                        continue; // Skip assignment and DB operations for this group
-                    }
-
-                    assignmentsSummary += `\n*${groupName}* (${groupNames.length} members):\n`;
-
-                    // Match within the group using the local function and parsed restrictions
-                    let matches; // Will be array of {giver, receiver} objects
-                    try {
-                        matches = assignSecretAngels(groupNames, restrictions);
-                    } catch (matchError) {
-                        // If matching fails for *any* group, abort the whole operation
-                        await client.query('ROLLBACK'); // Rollback transaction on matching error
-                        console.error(`Matching failed for group ${groupName} via bot:`, matchError);
-                        bot.sendMessage(chatId, `❌ Failed to create assignments for group ${i + 1} (${groupNames.join(', ')}). Error: ${matchError.message}. No changes were saved.`);
-                        allGroupsProcessedSuccessfully = false;
-                        break; // Exit the loop
-                    }
-
-                    if (!allGroupsProcessedSuccessfully) break; // Exit if previous iteration failed
-
-                    if (matches.length === 0 && groupNames.length >= 2) {
-                         // This case should ideally be caught by assignSecretAngels throwing an error,
-                         // but handle defensively. Abort the operation.
-                         await client.query('ROLLBACK');
-                         console.error(`Matching returned empty for group ${groupName} with ${groupNames.length} members.`);
-                         bot.sendMessage(chatId, `❌ An unexpected error occurred during matching for group ${i + 1}. No changes were saved.`);
-                         allGroupsProcessedSuccessfully = false;
-                         break; // Exit the loop
-                    }
-
-                    // Insert group
-                    const groupInsertResult = await client.query('INSERT INTO tg_groups (group_name) VALUES ($1) RETURNING group_id', [groupName]);
-                    const groupId = groupInsertResult.rows[0].group_id;
-
-                    // Insert members
-                    for (const name of groupNames) {
-                        const participantId = participantMap.get(name);
-                        if (participantId === undefined) {
-                             await client.query('ROLLBACK');
-                             console.error(`Could not find ID for participant name "${name}" in map.`);
-                             bot.sendMessage(chatId, `❌ Internal error: Could not map participant name "${name}" to ID. No changes were saved.`);
-                             allGroupsProcessedSuccessfully = false;
-                             break; // Exit inner loop
+Their wishlist: 
+${receiverWishlist}`, { parse_mode: 'Markdown' });
+                    } else {
+                        // Check if the participant exists but just doesn't have an assignment yet
+                        const participantCheck = await client.query('SELECT 1 FROM tg_participants WHERE lower(name) = lower($1)', [sanitizedName]); // Case-insensitive check
+                        if (participantCheck.rows.length > 0) {
+                            bot.sendMessage(chatId, `Hi ${sanitizedName}, it looks like assignments haven't been made yet, or you weren't included in the latest round. Please check back later or contact the admin.`);
+                        } else {
+                            bot.sendMessage(chatId, `Sorry, I couldn't find a registration for the name "${sanitizedName}" (case-insensitive). Please make sure you entered it correctly or use /register first.`);
                         }
-                        await client.query('INSERT INTO tg_group_members (group_id, participant_id) VALUES ($1, $2)', [groupId, participantId]);
                     }
-                    if (!allGroupsProcessedSuccessfully) break; // Exit outer loop if inner loop failed
-
-                    // Insert assignments
-                    for (const match of matches) {
-                        const giverId = participantMap.get(match.giver);
-                        const receiverId = participantMap.get(match.receiver);
-                         if (giverId === undefined || receiverId === undefined) {
-                             await client.query('ROLLBACK');
-                             console.error(`Could not find ID for giver "${match.giver}" or receiver "${match.receiver}" in map.`);
-                             bot.sendMessage(chatId, `❌ Internal error: Could not map assignment names to IDs. No changes were saved.`);
-                             allGroupsProcessedSuccessfully = false;
-                             break; // Exit inner loop
-                         }
-                        await client.query('INSERT INTO tg_assignments (group_id, giver_participant_id, receiver_participant_id) VALUES ($1, $2, $3)', [groupId, giverId, receiverId]);
-                        assignmentsSummary += `  - ${match.giver} -> ${match.receiver}\n`;
-                        totalAssignments++;
-                    }
-                    if (!allGroupsProcessedSuccessfully) break; // Exit outer loop if inner loop failed
-
-                } // End loop through groups
-
-                // Only commit if all groups were processed without error
-                if (allGroupsProcessedSuccessfully) {
-                    await client.query('COMMIT'); // Commit transaction
-                    console.log(`Admin ${userId} created ${createdGroupsByName.length} groups and ${totalAssignments} assignments via bot.`);
-                    bot.sendMessage(chatId, `✅ Successfully created ${createdGroupsByName.length} groups and ${totalAssignments} assignments!\n${assignmentsSummary}`, { parse_mode: 'Markdown' });
-                } else {
-                    // Rollback should have happened already, but ensure state is clean
-                    console.log("Group creation process aborted due to errors. Rollback attempted.");
-                    // Message indicating failure was already sent inside the loop/catch block
+                } catch (error) {
+                    console.error(`Error fetching assignment for ${sanitizedName} (chatId: ${chatId}):`, error);
+                    bot.sendMessage(chatId, 'Sorry, something went wrong while fetching your assignment. Please try again later.');
                 }
+                // -------------------------------------
 
-            } catch (error) {
-                // Catch any unexpected errors during the process (e.g., DB connection issues)
-                try { await client.query('ROLLBACK'); } catch (rbError) { console.error("Rollback failed:", rbError); }
-                console.error('Error during group creation/assignment transaction via bot:', error);
-                bot.sendMessage(chatId, `❌ An unexpected error occurred: ${error.message}. No changes were saved.`);
-            }
-            // -------------------------------------------------------------------
-            // Clear state regardless of confirmation outcome
-            delete userState[chatId];
-        } else if (state === 'awaiting_num_groups') {
-            if (!isAdmin(userId)) {
-                bot.sendMessage(chatId, "State error. Only the admin can specify the number of groups.");
+                // Clear state after handling
                 delete userState[chatId];
-                return;
-            }
-
-            const numGroups = parseInt(text.trim(), 10);
-            const participantCount = stateData.participantCount;
-
-            if (isNaN(numGroups) || numGroups <= 0) {
-                bot.sendMessage(chatId, "Please enter a valid positive number for the groups.");
-                return;
-            }
-            if (numGroups > participantCount) {
-                bot.sendMessage(chatId, `You cannot create more groups (${numGroups}) than participants (${participantCount}). Please enter a smaller number.`);
-                return;
-            }
-
-            bot.sendMessage(chatId, `Okay, creating ${numGroups} groups...`);
-            delete userState[chatId]; // Clear state before starting the process
-
-            // --- Perform Group Creation and Assignment (similar to server.js) ---
-            try {
-                // Import necessary functions (ensure paths are correct)
-                // Note: Direct require might not work if bot.js is run from a different CWD.
-                // Consider restructuring or using a shared module if issues arise.
-                // TODO: Implement or import local grouping and matching logic
-                // const { assignParticipantsToGroups } = require('./grouping'); // Example path
-                // const { assignSecretAngels } = require('./matching'); // Example path
-
-                // Retrieve participants with IDs
-                const participantResult = await client.query('SELECT id, name FROM tg_participants ORDER BY id');
-                const participants = participantResult.rows;
-                const participantNames = participants.map(p => p.name);
-                const participantMap = new Map(participants.map(p => [p.name, p.id]));
-
-                // Split names into groups
-                // TODO: Replace with actual grouping logic
-                bot.sendMessage(chatId, "🚧 Grouping logic not yet implemented in standalone bot.");
-                await client.query('ROLLBACK'); // Ensure transaction is closed
-                return;
-                // const createdGroupsByName = assignParticipantsToGroups(participantNames, numGroups);
-
-                // Start DB Transaction
-                await client.query('BEGIN');
-                let assignmentsSummary = '';
-
-                for (let i = 0; i < createdGroupsByName.length; i++) {
-                    const groupNames = createdGroupsByName[i];
-                    const groupName = `Secret Angel Group ${i + 1}`;
-                    assignmentsSummary += `\n*${groupName}* (${groupNames.length} members):\n`;
-
-                    // Match within the group (no restrictions passed from bot for now)
-                    let matchesByName;
-                    try {
-                        // TODO: Replace with actual matching logic, including restrictions
-                        bot.sendMessage(chatId, `🚧 Matching logic for group ${groupName} not yet implemented.`);
-                        await client.query('ROLLBACK'); // Ensure transaction is closed
-                        return; // Stop processing this group and the overall command
-                        // matchesByName = assignSecretAngels(groupNames, []); // Pass empty restrictions
-                    } catch (matchError) {
-                        await client.query('ROLLBACK');
-                        console.error(`Matching failed for group ${groupName} via bot:`, matchError);
-                        bot.sendMessage(chatId, `❌ Failed to create assignments for group ${i + 1} (${groupNames.join(', ')}). Error: ${matchError.message}`);
-                        return; // Stop the process
-                    }
-
-                    // Insert group
-                    const groupInsertResult = await client.query('INSERT INTO tg_groups (group_name) VALUES ($1) RETURNING group_id', [groupName]);
-                    const groupId = groupInsertResult.rows[0].group_id;
-
-                    // Insert members
-                    for (const name of groupNames) {
-                        const participantId = participantMap.get(name);
-                        await client.query('INSERT INTO tg_group_members (group_id, participant_id) VALUES ($1, $2)', [groupId, participantId]);
-                    }
-
-                    // Insert assignments
-                    for (const [giverName, receiverName] of Object.entries(matchesByName)) {
-                        const giverId = participantMap.get(giverName);
-                        const receiverId = participantMap.get(receiverName);
-                        await client.query('INSERT INTO tg_assignments (group_id, giver_participant_id, receiver_participant_id) VALUES ($1, $2, $3)', [groupId, giverId, receiverId]);
-                        assignmentsSummary += `  - ${giverName} -> ${receiverName}\n`;
-                    }
+            } else if (state === 'awaiting_clear_confirmation') {
+                if (!isAdmin(userId)) {
+                    // Safety check: only admin can confirm
+                    bot.sendMessage(chatId, "Confirmation error. Only the admin can confirm data clearing.");
+                    delete userState[chatId];
+                    return;
                 }
 
-                await client.query('COMMIT');
-                console.log(`Admin ${userId} created ${numGroups} groups via bot.`);
-                bot.sendMessage(chatId, `✅ Successfully created ${numGroups} groups and assignments!\n${assignmentsSummary}`, { parse_mode: 'Markdown' });
+                if (text && text.toLowerCase() === 'yes') {
+                    try {
+                        // Use TRUNCATE on specific tables for the bot
+                        await client.query('TRUNCATE TABLE tg_participants, tg_groups, tg_group_members, tg_assignments RESTART IDENTITY CASCADE');
+                        bot.sendMessage(chatId, '✅ All Telegram bot participant, group, and assignment data has been cleared.');
+                        console.log(`Admin ${userId} cleared all Telegram bot data.`);
+                    } catch (error) {
+                        console.error('Error clearing Telegram bot data:', error);
+                        bot.sendMessage(chatId, '❌ Failed to clear Telegram bot data. Please check the bot logs.');
+                    }
+                } else {
+                    bot.sendMessage(chatId, 'Data clearing cancelled.');
+                }
+                // Clear state regardless of confirmation outcome
+                delete userState[chatId];
+            } else if (state === 'awaiting_num_groups') {
+                if (!isAdmin(userId)) {
+                    bot.sendMessage(chatId, "State error. Only the admin can specify the number of groups.");
+                    delete userState[chatId];
+                    return;
+                }
 
-            } catch (error) {
-                await client.query('ROLLBACK');
-                console.error('Error during group creation via bot:', error);
-                bot.sendMessage(chatId, `❌ An error occurred while creating groups: ${error.message}`);
+                // Validate the number of groups
+                const numGroups = validateNumber(text, 1, stateData.participantCount);
+                
+                if (numGroups === null) {
+                    bot.sendMessage(chatId, `Please enter a valid number between 1 and ${stateData.participantCount} for the groups.`);
+                    return;
+                }
+
+                // Store numGroups and transition to asking for restrictions
+                userState[chatId].numGroups = numGroups;
+                userState[chatId].state = 'awaiting_restrictions';
+                bot.sendMessage(chatId, `Okay, ${numGroups} groups. Now, please enter the restricted pairs, one pair per line, comma-separated (e.g., Alice, Bob). Send 'none' or just press Enter if there are no restrictions.`);
+
+            } else if (state === 'awaiting_restrictions') {
+                 if (!isAdmin(userId)) {
+                    bot.sendMessage(chatId, "State error. Only the admin can provide restrictions.");
+                    delete userState[chatId];
+                    return;
+                }
+
+                const participants = stateData.participants; // Get participants fetched earlier {id, name}
+                const participantNames = participants.map(p => p.name);
+                const participantMap = new Map(participants.map(p => [p.name, p.id])); // Map name to ID
+                const numGroups = stateData.numGroups;
+
+                // Validate restrictions input
+                const restrictions = validateRestrictionsInput(text, participantNames);
+                
+                if (restrictions === null) {
+                    bot.sendMessage(chatId, "Invalid restrictions format. Please enter pairs as 'Name1, Name2' (one per line), or send 'none'. Participant names must match exactly.");
+                    return; // Keep state as awaiting_restrictions
+                }
+
+                bot.sendMessage(chatId, `Got it. Processing ${numGroups} groups with ${restrictions.length} restriction pair(s)...`);
+                delete userState[chatId]; // Clear state before starting the process
+
+                // --- Perform Group Creation and Assignment ---
+                try {
+                    // Clear previous groups and assignments first within a transaction
+                    await client.query('BEGIN'); // Start transaction
+                    await client.query('TRUNCATE TABLE tg_groups, tg_group_members, tg_assignments RESTART IDENTITY CASCADE');
+                    console.log(`Admin ${userId} cleared previous group/assignment data before creating new ones.`);
+
+                    // Split names into groups using the local function
+                    const createdGroupsByName = assignParticipantsToGroups(participantNames, numGroups);
+
+                    let assignmentsSummary = '';
+                    let totalAssignments = 0;
+                    let allGroupsProcessedSuccessfully = true;
+
+                    for (let i = 0; i < createdGroupsByName.length; i++) {
+                        const groupNames = createdGroupsByName[i];
+                        const groupName = `Secret Angel Group ${i + 1}`;
+
+                        if (groupNames.length < 2) {
+                            console.warn(`Skipping group ${i+1} because it has fewer than 2 members: [${groupNames.join(', ')}]`);
+                            assignmentsSummary += `
+*${groupName}* (${groupNames.length} members): Skipped (requires at least 2 members for assignments)
+`;
+                            continue; // Skip assignment and DB operations for this group
+                        }
+
+                        assignmentsSummary += `
+*${groupName}* (${groupNames.length} members):
+`;
+
+                        // Match within the group using the local function and parsed restrictions
+                        let matches; // Will be array of {giver, receiver} objects
+                        try {
+                            matches = assignSecretAngels(groupNames, restrictions);
+                        } catch (matchError) {
+                            // If matching fails for *any* group, abort the whole operation
+                            await client.query('ROLLBACK'); // Rollback transaction on matching error
+                            console.error(`Matching failed for group ${groupName} via bot:`, matchError);
+                            bot.sendMessage(chatId, `❌ Failed to create assignments for group ${i + 1} (${groupNames.join(', ')}). Error: ${matchError.message}. No changes were saved.`);
+                            allGroupsProcessedSuccessfully = false;
+                            break; // Exit the loop
+                        }
+
+                        if (!allGroupsProcessedSuccessfully) break; // Exit if previous iteration failed
+
+                        if (matches.length === 0 && groupNames.length >= 2) {
+                             // This case should ideally be caught by assignSecretAngels throwing an error,
+                             // but handle defensively. Abort the operation.
+                             await client.query('ROLLBACK');
+                             console.error(`Matching returned empty for group ${groupName} with ${groupNames.length} members.`);
+                             bot.sendMessage(chatId, `❌ An unexpected error occurred during matching for group ${i + 1}. No changes were saved.`);
+                             allGroupsProcessedSuccessfully = false;
+                             break; // Exit the loop
+                        }
+
+                        // Insert group
+                        const groupInsertResult = await client.query('INSERT INTO tg_groups (group_name) VALUES ($1) RETURNING group_id', [groupName]);
+                        const groupId = groupInsertResult.rows[0].group_id;
+
+                        // Insert members
+                        for (const name of groupNames) {
+                            const participantId = participantMap.get(name);
+                            if (participantId === undefined) {
+                                 await client.query('ROLLBACK');
+                                 console.error(`Could not find ID for participant name "${name}" in map.`);
+                                 bot.sendMessage(chatId, `❌ Internal error: Could not map participant name "${name}" to ID. No changes were saved.`);
+                                 allGroupsProcessedSuccessfully = false;
+                                 break; // Exit inner loop
+                            }
+                            await client.query('INSERT INTO tg_group_members (group_id, participant_id) VALUES ($1, $2)', [groupId, participantId]);
+                        }
+                        if (!allGroupsProcessedSuccessfully) break; // Exit outer loop if inner loop failed
+
+                        // Insert assignments
+                        for (const match of matches) {
+                            const giverId = participantMap.get(match.giver);
+                            const receiverId = participantMap.get(match.receiver);
+                             if (giverId === undefined || receiverId === undefined) {
+                                 await client.query('ROLLBACK');
+                                 console.error(`Could not find ID for giver "${match.giver}" or receiver "${match.receiver}" in map.`);
+                                 bot.sendMessage(chatId, `❌ Internal error: Could not map assignment names to IDs. No changes were saved.`);
+                                 allGroupsProcessedSuccessfully = false;
+                                 break; // Exit inner loop
+                             }
+                            await client.query('INSERT INTO tg_assignments (group_id, giver_participant_id, receiver_participant_id) VALUES ($1, $2, $3)', [groupId, giverId, receiverId]);
+                            assignmentsSummary += `  - ${match.giver} -> ${match.receiver}
+`;
+                            totalAssignments++;
+                        }
+                        if (!allGroupsProcessedSuccessfully) break; // Exit outer loop if inner loop failed
+
+                    } // End loop through groups
+
+                    // Only commit if all groups were processed without error
+                    if (allGroupsProcessedSuccessfully) {
+                        await client.query('COMMIT'); // Commit transaction
+                        console.log(`Admin ${userId} created ${createdGroupsByName.length} groups and ${totalAssignments} assignments via bot.`);
+                        bot.sendMessage(chatId, `✅ Successfully created ${createdGroupsByName.length} groups and ${totalAssignments} assignments!
+${assignmentsSummary}`, { parse_mode: 'Markdown' });
+                    } else {
+                        // Rollback should have happened already, but ensure state is clean
+                        console.log("Group creation process aborted due to errors. Rollback attempted.");
+                        // Message indicating failure was already sent inside the loop/catch block
+                    }
+
+                } catch (error) {
+                    // Catch any unexpected errors during the process (e.g., DB connection issues)
+                    try { await client.query('ROLLBACK'); } catch (rbError) { console.error("Rollback failed:", rbError); }
+                    console.error('Error during group creation/assignment transaction via bot:', error);
+                    bot.sendMessage(chatId, `❌ An unexpected error occurred: ${error.message}. No changes were saved.`);
+                }
+                // -------------------------------------------------------------------
+                // Clear state regardless of confirmation outcome
+                delete userState[chatId];
+            } else if (state === 'awaiting_num_groups') {
+                if (!isAdmin(userId)) {
+                    bot.sendMessage(chatId, "State error. Only the admin can specify the number of groups.");
+                    delete userState[chatId];
+                    return;
+                }
+
+                const numGroups = parseInt(text.trim(), 10);
+                const participantCount = stateData.participantCount;
+
+                if (isNaN(numGroups) || numGroups <= 0) {
+                    bot.sendMessage(chatId, "Please enter a valid positive number for the groups.");
+                    return;
+                }
+                if (numGroups > participantCount) {
+                    bot.sendMessage(chatId, `You cannot create more groups (${numGroups}) than participants (${participantCount}). Please enter a smaller number.`);
+                    return;
+                }
+
+                bot.sendMessage(chatId, `Okay, creating ${numGroups} groups...`);
+                delete userState[chatId]; // Clear state before starting the process
+
+                // --- Perform Group Creation and Assignment (similar to server.js) ---
+                try {
+                    // Import necessary functions (ensure paths are correct)
+                    // Note: Direct require might not work if bot.js is run from a different CWD.
+                    // Consider restructuring or using a shared module if issues arise.
+                    // TODO: Implement or import local grouping and matching logic
+                    // const { assignParticipantsToGroups } = require('./grouping'); // Example path
+                    // const { assignSecretAngels } = require('./matching'); // Example path
+
+                    // Retrieve participants with IDs
+                    const participantResult = await client.query('SELECT id, name FROM tg_participants ORDER BY id');
+                    const participants = participantResult.rows;
+                    const participantNames = participants.map(p => p.name);
+                    const participantMap = new Map(participants.map(p => [p.name, p.id]));
+
+                    // Split names into groups
+                    // TODO: Replace with actual grouping logic
+                    bot.sendMessage(chatId, "🚧 Grouping logic not yet implemented in standalone bot.");
+                    await client.query('ROLLBACK'); // Ensure transaction is closed
+                    return;
+                    // const createdGroupsByName = assignParticipantsToGroups(participantNames, numGroups);
+
+                    // Start DB Transaction
+                    await client.query('BEGIN');
+                    let assignmentsSummary = '';
+
+                    for (let i = 0; i < createdGroupsByName.length; i++) {
+                        const groupNames = createdGroupsByName[i];
+                        const groupName = `Secret Angel Group ${i + 1}`;
+                        assignmentsSummary += `
+*${groupName}* (${groupNames.length} members):
+`;
+
+                        // Match within the group (no restrictions passed from bot for now)
+                        let matchesByName;
+                        try {
+                            // TODO: Replace with actual matching logic, including restrictions
+                            bot.sendMessage(chatId, `🚧 Matching logic for group ${groupName} not yet implemented.`);
+                            await client.query('ROLLBACK'); // Ensure transaction is closed
+                            return; // Stop processing this group and the overall command
+                            // matchesByName = assignSecretAngels(groupNames, []); // Pass empty restrictions
+                        } catch (matchError) {
+                            await client.query('ROLLBACK');
+                            console.error(`Matching failed for group ${groupName} via bot:`, matchError);
+                            bot.sendMessage(chatId, `❌ Failed to create assignments for group ${i + 1} (${groupNames.join(', ')}). Error: ${matchError.message}`);
+                            return; // Stop the process
+                        }
+
+                        // Insert group
+                        const groupInsertResult = await client.query('INSERT INTO tg_groups (group_name) VALUES ($1) RETURNING group_id', [groupName]);
+                        const groupId = groupInsertResult.rows[0].group_id;
+
+                        // Insert members
+                        for (const name of groupNames) {
+                            const participantId = participantMap.get(name);
+                            await client.query('INSERT INTO tg_group_members (group_id, participant_id) VALUES ($1, $2)', [groupId, participantId]);
+                        }
+
+                        // Insert assignments
+                        for (const [giverName, receiverName] of Object.entries(matchesByName)) {
+                            const giverId = participantMap.get(giverName);
+                            const receiverId = participantMap.get(receiverName);
+                            await client.query('INSERT INTO tg_assignments (group_id, giver_participant_id, receiver_participant_id) VALUES ($1, $2, $3)', [groupId, giverId, receiverId]);
+                            assignmentsSummary += `  - ${giverName} -> ${receiverName}
+`;
+                        }
+                    }
+
+                    await client.query('COMMIT');
+                    console.log(`Admin ${userId} created ${numGroups} groups via bot.`);
+                    bot.sendMessage(chatId, `✅ Successfully created ${numGroups} groups and assignments!
+${assignmentsSummary}`, { parse_mode: 'Markdown' });
+
+                } catch (error) {
+                    await client.query('ROLLBACK');
+                    console.error('Error during group creation via bot:', error);
+                    bot.sendMessage(chatId, `❌ An error occurred while creating groups: ${error.message}`);
+                }
+                // -------------------------------------------------------------------
             }
-            // -------------------------------------------------------------------
         }
+    } catch (error) {
+        console.error('Unexpected error in message handler:', error);
+        // Don't send error details to user for security reasons
+        // You might want to send a generic error message instead
     }
 });
 

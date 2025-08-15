@@ -153,12 +153,14 @@ function verifyWebhookRequest(req, token) {
     
     // For now, we'll do a basic check to ensure the request is properly formatted
     if (!req || !req.body) {
+        console.warn('Webhook verification failed: Missing request or body');
         return false;
     }
     
     // Check for required fields in Telegram webhook updates
     const update = req.body;
     if (!update.update_id) {
+        console.warn('Webhook verification failed: Missing update_id');
         return false;
     }
     
