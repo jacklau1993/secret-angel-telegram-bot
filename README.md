@@ -58,6 +58,16 @@ This bot is configured for deployment on Render.com with a Neon PostgreSQL datab
      - DATABASE_URL (from Neon)
    - Deploy!
 
+## Security Features
+
+This bot includes several security features to protect against common vulnerabilities:
+
+- **Input Validation & Sanitization**: All user inputs are validated and sanitized to prevent injection attacks
+- **SQL Injection Prevention**: All database queries use parameterized statements
+- **Rate Limiting**: Prevents abuse by limiting the number of requests per user
+- **Webhook Verification**: Ensures webhook requests are genuinely from Telegram
+- **Admin Access Control**: Admin-only commands are protected by user ID verification
+
 ## Bot Commands
 
 User Commands:
